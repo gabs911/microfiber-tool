@@ -13,13 +13,7 @@ from backend import AppState, MachineController
 
 
 INFO_TEXT = (
-    "Autor:\n"
-    "      Ing. Andrii Shynkarenko\n"
-    "      Department of Manufacturing Systems and Automation\n"
-    "      Technical University of Liberec\n\n"
-    "In case of breakdown, contact:\n"
-    "      andrii.shynkarenko@tul.cz\n"
-    "      +420 48535 3355"
+   ""
 )
 
 
@@ -32,6 +26,101 @@ def _title_label(text: str) -> QLabel:
     return lbl
 
 
+def _subtle_label(text: str) -> QLabel:
+    lbl = QLabel(text)
+    f = QFont()
+    f.setPointSize(10)
+    f.setBold(False)
+    lbl.setFont(f)
+    lbl.setStyleSheet("color: #666;")
+    return lbl
+
+
+class RectanglePreview(QWidget):
+    """Live preview of safe area and current rectangle (green=valid, red=invalid)."""
+
+    def __init__(self, controller: "MachineController", state: "AppState") -> None:
+        super().__init__()
+        self.controller = controller
+        self.state = state
+        self.setMinimumHeight(240)
+        self.state.changed.connect(self.update)
+
+    def paintEvent(self, event) -> None:
+        from PySide6.QtGui import QPainter, QPen, QColor, QBrush
+
+        BED_W = 170.0
+        BED_H = 230.0
+
+        p = self.state.params
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        margin = 16.0
+        avail_w = max(10.0, float(self.width()) - 2 * margin)
+        avail_h = max(10.0, float(self.height()) - 2 * margin)
+        side = max(10.0, min(avail_w, avail_h))
+
+        ox = (float(self.width()) - side) / 2.0
+        oy = (float(self.height()) - side) / 2.0
+
+        def mx(x_mm: float) -> float:
+            return ox + (x_mm / BED_W) * side
+
+        def my(y_mm: float) -> float:
+            return oy + side - (y_mm / BED_H) * side
+
+        # Bed outline
+        painter.setPen(QPen(QColor(200, 200, 200), 2))
+        painter.setBrush(QBrush(Qt.NoBrush))
+        #painter.drawRect(ox, oy, side, side)
+
+        # Usable area outline
+        sx0 = float(p.safe_x_min)
+        sx1 = float(p.safe_x_max)
+        sy0 = float(p.safe_y_min)
+        sy1 = float(p.safe_y_max)
+
+        painter.setPen(QPen(QColor(120, 180, 255), 2))
+        painter.setBrush(QBrush(Qt.NoBrush))
+        rx = mx(sx0)
+        ry = my(sy1)
+        rw = mx(sx1) - mx(sx0)
+        rh = my(sy0) - my(sy1)
+        painter.drawRect(rx, ry, rw, rh)
+
+        # Requested rectangle
+        orient = str(p.fiber_orientation)
+        L = float(p.fiber_length)
+        Wd = float(p.fiber_width)
+        sx = float(p.start_x)
+        sy = float(p.start_y + 20)
+
+        if orient == "Horizontal":
+            x0, x1 = sx, sx + L
+            y0, y1 = sy, sy + Wd
+        else:
+            x0, x1 = sx, sx + Wd
+            y0, y1 = sy, sy + L
+
+        try:
+            _ = self.controller.get_draw_rectangle()
+            valid = True
+        except Exception:
+            valid = False
+
+        painter.setPen(QPen(QColor(30, 30, 30), 2))
+        painter.setBrush(QBrush(QColor(0, 180, 0, 110) if valid else QColor(200, 0, 0, 110)))
+
+        rrx = mx(x0)
+        rry = my(y1)
+        rrw = mx(x1) - mx(x0)
+        rrh = my(y0) - my(y1)
+        painter.drawRect(rrx, rry, rrw, rrh)
+
+
+
+
 class MainWindow(QMainWindow):
     def __init__(self, state: AppState, controller: MachineController) -> None:
         super().__init__()
@@ -39,7 +128,7 @@ class MainWindow(QMainWindow):
         self.controller = controller
 
         self.setWindowTitle("Nanofiber Machine")
-        self.setMinimumSize(QSize(980, 680))
+        self.setMinimumSize(QSize(980, 780))
 
         root = QWidget()
         root_layout = QHBoxLayout(root)
@@ -185,66 +274,14 @@ class DrawPage(QWidget):
 
         outer.addWidget(_title_label("Drawing"))
 
-        # ---------------- Mode ----------------
-        mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("Mode"))
-        self.mode = QComboBox()
-        self.mode.addItems(["Legacy", "CustomCentered"])
-        self.mode.currentTextChanged.connect(lambda t: self.state.set_param("mode", t))
-        mode_row.addWidget(self.mode)
-        mode_row.addStretch(1)
-        outer.addLayout(mode_row)
+        # Force rectangle mode (legacy UI removed)
+        self.state.set_param("mode", "CustomCentered")
 
-        # ---------------- Legacy group ----------------
-        self.grp_legacy = QGroupBox("Legacy (cups/orientation)")
-        legacy_grid = QGridLayout(self.grp_legacy)
-        legacy_grid.setHorizontalSpacing(14)
-        legacy_grid.setVerticalSpacing(10)
-
-        self.layers = QComboBox()
-        self.layers.addItems([str(i) for i in range(1, 11)])
-        self.layers.currentTextChanged.connect(lambda t: self.state.set_param("layers", int(t)))
-
-        self.orientation = QComboBox()
-        self.orientation.addItems(["Horizontal", "Vertical", "Both"])
-        self.orientation.currentTextChanged.connect(lambda t: self.state.set_param("orientation", t))
-
-        cups_box = QGroupBox("Cups")
-        cups_layout = QHBoxLayout(cups_box)
-        self.cups_group = QButtonGroup(self)
-        self.cups3 = QRadioButton("3")
-        self.cups6 = QRadioButton("6")
-        self.cups9 = QRadioButton("9")
-        self.cups_group.addButton(self.cups3, 3)
-        self.cups_group.addButton(self.cups6, 6)
-        self.cups_group.addButton(self.cups9, 9)
-        cups_layout.addWidget(self.cups3)
-        cups_layout.addWidget(self.cups6)
-        cups_layout.addWidget(self.cups9)
-        self.cups_group.idClicked.connect(lambda v: self.state.set_param("cups", int(v)))
-
-        self.step = QDoubleSpinBox()
-        self.step.setDecimals(3)
-        self.step.setRange(0.001, 50.0)
-        self.step.setSingleStep(0.1)
-        self.step.valueChanged.connect(lambda v: self.state.set_param("step", float(v)))
-
-        legacy_grid.addWidget(QLabel("Layers"), 0, 0)
-        legacy_grid.addWidget(self.layers, 0, 1)
-        legacy_grid.addWidget(QLabel("Orientation"), 0, 2)
-        legacy_grid.addWidget(self.orientation, 0, 3)
-
-        legacy_grid.addWidget(cups_box, 1, 0, 1, 2)
-        legacy_grid.addWidget(QLabel("Step (mm)"), 1, 2)
-        legacy_grid.addWidget(self.step, 1, 3)
-
-        outer.addWidget(self.grp_legacy)
-
-        # ---------------- CustomCentered group ----------------
-        self.grp_custom = QGroupBox("CustomCentered (centered inside safe area)")
-        custom_grid = QGridLayout(self.grp_custom)
-        custom_grid.setHorizontalSpacing(14)
-        custom_grid.setVerticalSpacing(10)
+        # ---------------- Rectangle parameters ----------------
+        rect = QGroupBox("Rectangle parameters")
+        rect_grid = QGridLayout(rect)
+        rect_grid.setHorizontalSpacing(14)
+        rect_grid.setVerticalSpacing(10)
 
         self.fiber_orientation = QComboBox()
         self.fiber_orientation.addItems(["Horizontal", "Vertical"])
@@ -252,100 +289,113 @@ class DrawPage(QWidget):
 
         self.fiber_length = QDoubleSpinBox()
         self.fiber_length.setDecimals(2)
-        self.fiber_length.setRange(1.0, 1000.0)
+        self.fiber_length.setRange(0.0, 10000.0)
         self.fiber_length.setSingleStep(1.0)
         self.fiber_length.valueChanged.connect(lambda v: self.state.set_param("fiber_length", float(v)))
 
         self.fiber_width = QDoubleSpinBox()
         self.fiber_width.setDecimals(2)
-        self.fiber_width.setRange(0.0, 1000.0)
+        self.fiber_width.setRange(0.0, 10000.0)
         self.fiber_width.setSingleStep(1.0)
         self.fiber_width.valueChanged.connect(lambda v: self.state.set_param("fiber_width", float(v)))
 
         self.fiber_spacing = QDoubleSpinBox()
-        self.fiber_spacing.setDecimals(3)
-        self.fiber_spacing.setRange(0.001, 100.0)
+        self.fiber_spacing.setDecimals(2)
+        self.fiber_spacing.setRange(0.01, 10000.0)
         self.fiber_spacing.setSingleStep(0.1)
         self.fiber_spacing.valueChanged.connect(lambda v: self.state.set_param("fiber_spacing", float(v)))
 
-        # safe bounds (read-only display)
-        self.lbl_safe = QLabel("")
-        self.lbl_safe.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.start_x = QDoubleSpinBox()
+        self.start_x.setDecimals(2)
+        self.start_x.setRange(-1000.0, 1000.0)
+        self.start_x.setSingleStep(1.0)
+        self.start_x.valueChanged.connect(lambda v: self.state.set_param("start_x", float(v)))
 
-        custom_grid.addWidget(QLabel("Fiber Orientation"), 0, 0)
-        custom_grid.addWidget(self.fiber_orientation, 0, 1)
-        custom_grid.addWidget(QLabel("Fiber Length L (mm)"), 1, 0)
-        custom_grid.addWidget(self.fiber_length, 1, 1)
-        custom_grid.addWidget(QLabel("Fiber Width W (mm)"), 2, 0)
-        custom_grid.addWidget(self.fiber_width, 2, 1)
-        custom_grid.addWidget(QLabel("Spacing S (mm)"), 3, 0)
-        custom_grid.addWidget(self.fiber_spacing, 3, 1)
+        self.start_y = QDoubleSpinBox()
+        self.start_y.setDecimals(2)
+        self.start_y.setRange(-1000.0, 1000.0)
+        self.start_y.setSingleStep(1.0)
+        self.start_y.valueChanged.connect(lambda v: self.state.set_param("start_y", float(v)))
 
-        custom_grid.addWidget(QLabel("Safe bounds"), 0, 2)
-        custom_grid.addWidget(self.lbl_safe, 0, 3, 4, 1)
+        rect_grid.addWidget(QLabel("Orientation"), 0, 0)
+        rect_grid.addWidget(self.fiber_orientation, 0, 1)
+        rect_grid.addWidget(QLabel("Length (mm)"), 1, 0)
+        rect_grid.addWidget(self.fiber_length, 1, 1)
+        rect_grid.addWidget(QLabel("Width (mm)"), 2, 0)
+        rect_grid.addWidget(self.fiber_width, 2, 1)
+        rect_grid.addWidget(QLabel("Spacing (mm)"), 3, 0)
+        rect_grid.addWidget(self.fiber_spacing, 3, 1)
+        rect_grid.addWidget(QLabel("Starting X (mm)"), 4, 0)
+        rect_grid.addWidget(self.start_x, 4, 1)
+        rect_grid.addWidget(QLabel("Starting Y (mm)"), 5, 0)
+        rect_grid.addWidget(self.start_y, 5, 1)
 
-        outer.addWidget(self.grp_custom)
+        outer.addWidget(rect)
 
-        # ---------------- Common motion/deposition ----------------
-        common = QGroupBox("Common parameters (applies to both modes)")
+        outer.addWidget(_subtle_label("Preview (230×230 bed, usable area, rectangle)"))
+        self.preview = RectanglePreview(self.controller, self.state)
+        outer.addWidget(self.preview)
+
+        # ---------------- Common motion/deposition (kept) ----------------
+        common = QGroupBox("Common parameters")
         common_grid = QGridLayout(common)
         common_grid.setHorizontalSpacing(14)
         common_grid.setVerticalSpacing(10)
 
+        # speed slider + label
         self.speed = QSlider(Qt.Horizontal)
         self.speed.setRange(100, 5000)
         self.speed.valueChanged.connect(lambda v: self.state.set_param("speed", int(v)))
-        self.speed_label = QLabel("1500 mm/min")
-        self.speed.valueChanged.connect(lambda v: self.speed_label.setText(f"{v} mm/min"))
+        self.speed_label = QLabel("")
 
+        # droplet amount
         self.amount = QDoubleSpinBox()
         self.amount.setDecimals(3)
-        self.amount.setRange(0.0, 9999.0)
+        self.amount.setRange(0.0, 1000.0)
         self.amount.setSingleStep(0.1)
         self.amount.valueChanged.connect(lambda v: self.state.set_param("droplet_amount", float(v)))
 
+        # z-hop
         self.zhop = QDoubleSpinBox()
-        self.zhop.setDecimals(3)
-        self.zhop.setRange(0.0, 200.0)
+        self.zhop.setDecimals(2)
+        self.zhop.setRange(0.0, 1000.0)
         self.zhop.setSingleStep(0.5)
         self.zhop.valueChanged.connect(lambda v: self.state.set_param("z_hop", float(v)))
 
-        self.pause_ms = QSpinBox()
-        self.pause_ms.setRange(0, 600000)
-        self.pause_ms.setSingleStep(50)
-        self.pause_ms.valueChanged.connect(lambda v: self.state.set_param("pause_ms", int(v)))
-
+        # z-offset
         self.zoffset = QDoubleSpinBox()
         self.zoffset.setDecimals(3)
-        self.zoffset.setRange(0.0, 50.0)
-        self.zoffset.setSingleStep(0.1)
+        self.zoffset.setRange(-1000.0, 1000.0)
+        self.zoffset.setSingleStep(0.01)
         self.zoffset.valueChanged.connect(lambda v: self.state.set_param("z_offset", float(v)))
 
-        self.chk_afterdrop = QCheckBox("Afterdrop")
-        self.chk_clean = QCheckBox("Clean")
-        self.chk_afterdrop.stateChanged.connect(lambda s: self.state.set_param("afterdrop", s == Qt.Checked))
-        self.chk_clean.stateChanged.connect(lambda s: self.state.set_param("clean", s == Qt.Checked))
+        # pause ms
+        self.pause_ms = QSpinBox()
+        self.pause_ms.setRange(0, 600000)
+        self.pause_ms.valueChanged.connect(lambda v: self.state.set_param("pause_ms", int(v)))
 
-        self.btn_test_z = QPushButton("Test Z-offset")
+        self.chk_afterdrop = QCheckBox("Afterdrop")
+        self.chk_afterdrop.toggled.connect(lambda v: self.state.set_param("afterdrop", bool(v)))
+
+        self.chk_clean = QCheckBox("Clean")
+        self.chk_clean.toggled.connect(lambda v: self.state.set_param("clean", bool(v)))
+
+        self.btn_test_z = QPushButton("Test Z-Offset")
         self.btn_test_z.clicked.connect(self.controller.test_zoffset)
 
-        common_grid.addWidget(QLabel("Speed (mm/min)"), 0, 0)
+        common_grid.addWidget(QLabel("Speed"), 0, 0)
         common_grid.addWidget(self.speed, 0, 1, 1, 2)
         common_grid.addWidget(self.speed_label, 0, 3)
-
         common_grid.addWidget(QLabel("Droplet Amount (E units)"), 1, 0)
         common_grid.addWidget(self.amount, 1, 1)
         common_grid.addWidget(QLabel("Z-Offset (mm)"), 1, 2)
         common_grid.addWidget(self.zoffset, 1, 3)
-
         common_grid.addWidget(QLabel("Z-Hop (mm)"), 2, 0)
         common_grid.addWidget(self.zhop, 2, 1)
         common_grid.addWidget(QLabel("Pause (ms)"), 2, 2)
         common_grid.addWidget(self.pause_ms, 2, 3)
-
         common_grid.addWidget(self.chk_afterdrop, 3, 0, 1, 2)
         common_grid.addWidget(self.chk_clean, 3, 2, 1, 2)
-
         common_grid.addWidget(self.btn_test_z, 4, 0, 1, 4)
 
         outer.addWidget(common)
@@ -365,44 +415,21 @@ class DrawPage(QWidget):
     def _sync_from_state(self) -> None:
         p = self.state.params
 
-        # mode
-        self.mode.blockSignals(True)
-        self.mode.setCurrentText(p.mode)
-        self.mode.blockSignals(False)
+        # rectangle
+        self.fiber_orientation.blockSignals(True)
+        self.fiber_orientation.setCurrentText(str(p.fiber_orientation))
+        self.fiber_orientation.blockSignals(False)
 
-        # enable/disable groups
-        is_custom = (p.mode == "CustomCentered")
-        self.grp_custom.setEnabled(is_custom)
-        self.grp_legacy.setEnabled(not is_custom)
+        for w, val in [(self.fiber_length, p.fiber_length), (self.fiber_width, p.fiber_width), (self.fiber_spacing, p.fiber_spacing),
+                      (self.start_x, p.start_x), (self.start_y, p.start_y)]:
+            w.blockSignals(True)
+            w.setValue(float(val))
+            w.blockSignals(False)
 
-        # legacy fields
-        self.layers.blockSignals(True); self.layers.setCurrentText(str(p.layers)); self.layers.blockSignals(False)
-        self.orientation.blockSignals(True); self.orientation.setCurrentText(p.orientation); self.orientation.blockSignals(False)
-        if p.cups == 3:
-            self.cups3.setChecked(True)
-        elif p.cups == 6:
-            self.cups6.setChecked(True)
-        else:
-            self.cups9.setChecked(True)
-        self.step.blockSignals(True); self.step.setValue(float(p.step)); self.step.blockSignals(False)
-
-        # custom fields
-        self.fiber_orientation.blockSignals(True); self.fiber_orientation.setCurrentText(p.fiber_orientation); self.fiber_orientation.blockSignals(False)
-        self.fiber_length.blockSignals(True); self.fiber_length.setValue(float(p.fiber_length)); self.fiber_length.blockSignals(False)
-        self.fiber_width.blockSignals(True); self.fiber_width.setValue(float(p.fiber_width)); self.fiber_width.blockSignals(False)
-        self.fiber_spacing.blockSignals(True); self.fiber_spacing.setValue(float(p.fiber_spacing)); self.fiber_spacing.blockSignals(False)
-
-        x_min, x_max, y_min, y_max = p.safe_x_min, p.safe_x_max, p.safe_y_min, p.safe_y_max
-        xc = (x_min + x_max) / 2.0
-        yc = (y_min + y_max) / 2.0
-        self.lbl_safe.setText(
-            f"X: [{x_min:.1f}, {x_max:.1f}]\n"
-            f"Y: [{y_min:.1f}, {y_max:.1f}]\n"
-            f"Center: ({xc:.1f}, {yc:.1f})"
-        )
-
-        # common fields
-        self.speed.blockSignals(True); self.speed.setValue(int(p.speed)); self.speed.blockSignals(False)
+        # common
+        self.speed.blockSignals(True)
+        self.speed.setValue(int(p.speed))
+        self.speed.blockSignals(False)
         self.speed_label.setText(f"{int(p.speed)} mm/min")
 
         for w, val in [(self.amount, p.droplet_amount), (self.zhop, p.z_hop), (self.zoffset, p.z_offset)]:
@@ -410,10 +437,17 @@ class DrawPage(QWidget):
             w.setValue(float(val))
             w.blockSignals(False)
 
-        self.pause_ms.blockSignals(True); self.pause_ms.setValue(int(p.pause_ms)); self.pause_ms.blockSignals(False)
+        self.pause_ms.blockSignals(True)
+        self.pause_ms.setValue(int(p.pause_ms))
+        self.pause_ms.blockSignals(False)
 
-        self.chk_afterdrop.blockSignals(True); self.chk_afterdrop.setChecked(bool(p.afterdrop)); self.chk_afterdrop.blockSignals(False)
-        self.chk_clean.blockSignals(True); self.chk_clean.setChecked(bool(p.clean)); self.chk_clean.blockSignals(False)
+        self.chk_afterdrop.blockSignals(True)
+        self.chk_afterdrop.setChecked(bool(p.afterdrop))
+        self.chk_afterdrop.blockSignals(False)
+
+        self.chk_clean.blockSignals(True)
+        self.chk_clean.setChecked(bool(p.clean))
+        self.chk_clean.blockSignals(False)
 
 
 class SyringePage(QWidget):

@@ -26,7 +26,7 @@ class Params:
     # --- Mode ---
     # Legacy: usa a lógica antiga (cups + orientation Horizontal/Vertical/Both)
     # CustomCentered: usa L/W/spacing centralizado na área segura (safe bounds)
-    mode: str = "Legacy"  # "Legacy" | "CustomCentered"
+    mode: str = "CustomCentered"  # "Legacy" | "CustomCentered"
 
     # --- Legacy draw params (GUI.py semantics) ---
     layers: int = 1
@@ -49,11 +49,15 @@ class Params:
     syringe_droplet_units: int = 5
 
     # --- CustomCentered safe bounds (seu retângulo seguro) ---
-    safe_x_min: float = 0.0
-    safe_x_max: float = 146.0
-    safe_y_min: float = 25.0
-    safe_y_max: float = 225.0
+    safe_x_min: float = 0
+    safe_x_max: float = 170
+    safe_y_min: float = 20.0
+    safe_y_max: float = 250.0
 
+
+    # --- Rectangle anchor (bottom-left corner of draw rectangle) ---
+    start_x: float = 0
+    start_y: float = 0
     # --- CustomCentered parameters ---
     fiber_orientation: str = "Horizontal"  # Horizontal | Vertical
     fiber_length: float = 80.0            # L (mm)
@@ -105,6 +109,9 @@ class AppState(QObject):
             "Safe Y Min": float(p.safe_y_min),
             "Safe Y Max": float(p.safe_y_max),
 
+            "Start X": float(p.start_x),
+            "Start Y": float(p.start_y),
+
             # custom centered
             "Fiber Orientation": str(p.fiber_orientation),
             "Fiber Length": float(p.fiber_length),
@@ -137,6 +144,9 @@ class AppState(QObject):
         p.safe_x_max = float(data.get("Safe X Max", p.safe_x_max))
         p.safe_y_min = float(data.get("Safe Y Min", p.safe_y_min))
         p.safe_y_max = float(data.get("Safe Y Max", p.safe_y_max))
+
+        p.start_x = float(data.get("Start X", p.start_x))
+        p.start_y = float(data.get("Start Y", p.start_y))
 
         p.fiber_orientation = str(data.get("Fiber Orientation", p.fiber_orientation))
         p.fiber_length = float(data.get("Fiber Length", p.fiber_length))
@@ -443,30 +453,55 @@ class MachineController(QObject):
         yc = (y_min + y_max) / 2.0
         return x_min, x_max, y_min, y_max, xc, yc
 
-    def _compute_centered_rect(self, length: float, width: float, orient: str) -> tuple[float, float, float, float]:
+
+    def _compute_anchored_rect(
+        self,
+        length: float,
+        width: float,
+        orient: str,
+        start_x: float,
+        start_y: float,
+    ) -> tuple[float, float, float, float]:
         """
-        Returns (x0, x1, y0, y1) of the work rectangle centered in safe area.
+        Returns (x0, x1, y0, y1) of the work rectangle anchored at bottom-left (start_x, start_y),
+        validated to be fully inside safe bounds (SAFE HARD).
         For Horizontal fibers: length along X, width along Y.
         For Vertical fibers: length along Y, width along X.
         """
-        x_min, x_max, y_min, y_max, xc, yc = self._safe_center()
-
+        x_min, x_max, y_min, y_max, _, _ = self._safe_center()
+        start_y += 20
         if orient == "Horizontal":
-            x0, x1 = xc - length / 2.0, xc + length / 2.0
-            y0, y1 = yc - width / 2.0,  yc + width / 2.0
+            x0, x1 = start_x, start_x + length
+            y0, y1 = start_y, start_y + width
         else:
-            # Vertical
-            x0, x1 = xc - width / 2.0,  xc + width / 2.0
-            y0, y1 = yc - length / 2.0, yc + length / 2.0
+            x0, x1 = start_x, start_x + width
+            y0, y1 = start_y, start_y + length
 
         if x0 < x_min or x1 > x_max or y0 < y_min or y1 > y_max:
             raise RuntimeError(
-                f"Custom area does not fit safe bounds. "
-                f"Requested rect: X[{x0:.1f},{x1:.1f}] Y[{y0:.1f},{y1:.1f}], "
-                f"Safe: X[{x_min:.1f},{x_max:.1f}] Y[{y_min:.1f},{y_max:.1f}]"
+                f"Rectangle outside safe bounds. "
+                f"Rect: X[{x0:.2f},{x1:.2f}] Y[{y0:.2f},{y1:.2f}] | "
+                f"Safe: X[{x_min:.2f},{x_max:.2f}] Y[{y_min:.2f},{y_max:.2f}]"
             )
-
         return x0, x1, y0, y1
+
+    def get_draw_rectangle(self) -> tuple[float, float, float, float]:
+        """Convenience for UI preview and validation (raises if invalid)."""
+        p = self.state.params
+        return self._compute_anchored_rect(
+            float(p.fiber_length),
+            float(p.fiber_width),
+            str(p.fiber_orientation),
+            float(p.start_x),
+            float(p.start_y),
+        )
+
+    def draw_rectangle_is_valid(self) -> bool:
+        try:
+            _ = self.get_draw_rectangle()
+            return True
+        except Exception:
+            return False
 
     @staticmethod
     def _clamp(v: float, lo: float, hi: float) -> float:
@@ -542,31 +577,34 @@ class MachineController(QObject):
                 self.state.params.syringe_current_amount - float(pp.droplet_amount),
             )
 
-        # run layers (repeat the centered pattern)
+
+        # run layers (anchored rectangle pattern; SAFE HARD)
         for layer in range(int(self.state.params.layers)):
-            pp0 = self.state.params
 
-            orient = str(pp0.fiber_orientation)
-            L = float(pp0.fiber_length)
-            W = float(pp0.fiber_width)
-            S = float(pp0.fiber_spacing)
-
-            if L <= 0 or W < 0:
-                raise RuntimeError("Fiber length must be > 0 and width must be >= 0")
-            if S <= 0:
-                raise RuntimeError("Fiber spacing must be > 0")
-
-            x0, x1, y0, y1 = self._compute_centered_rect(L, W, orient)
-
-            # if width == 0: draw just one fiber
-            n_fibers = 1 if W == 0 else int((W // S) + 1)
-
+            # we validate on every fiber because parameters can change live
             send("G90")
-            send(f"G1 Z7 F{int(pp0.speed)}")
+            send(f"G1 Z7 F{int(self.state.params.speed)}")
 
-            # serpentine scan
-            for i in range(n_fibers):
-                pp = self.state.params  # live params
+            i = 0
+            while True:
+                # allow live updates to apply to the NEXT fiber safely
+                pp = self.state.params
+
+                orient = str(pp.fiber_orientation)
+                L = float(pp.fiber_length)
+                W = float(pp.fiber_width)
+                S = float(pp.fiber_spacing)
+
+                if L <= 0 or W < 0:
+                    raise RuntimeError("Fiber length must be > 0 and width must be >= 0")
+                if S <= 0:
+                    raise RuntimeError("Fiber spacing must be > 0")
+
+                # SAFE HARD rectangle (raises if out of bounds)
+                x0, x1, y0, y1 = self._compute_anchored_rect(
+                    L, W, orient, float(pp.start_x), float(pp.start_y)
+                )
+
                 speed = int(pp.speed)
                 zoff = float(pp.z_offset)
                 zhop = float(pp.z_hop)
@@ -575,7 +613,7 @@ class MachineController(QObject):
                 clean = bool(pp.clean)
 
                 if orient == "Horizontal":
-                    y = y0 + i * float(pp.fiber_spacing)
+                    y = y0 + i * S
                     if y > y1 + 1e-6:
                         break
 
@@ -585,7 +623,6 @@ class MachineController(QObject):
                     else:
                         xs, xe = x1, x0
 
-                    # go to start, deposit, hop
                     send(f"G1 X{xs:.3f} Y{y:.3f} F{speed}")
                     send(f"G1 Z{zoff:.3f} F{speed}")
                     extrusion()
@@ -593,17 +630,15 @@ class MachineController(QObject):
                     if pause_ms:
                         send(f"G4 P{pause_ms}")
 
-                    # travel and land at end
                     send(f"G1 X{xe:.3f} Y{y:.3f} F{speed}")
                     send(f"G1 Z{zoff:.3f} F{speed}")
 
                     if after:
                         afterdrop()
 
-                    # clean on the end side, clamped to safe bounds
                     if clean:
                         x_min, x_max, y_min, y_max, _, _ = self._safe_center()
-                        # move a bit further outside the end side
+                        # move a bit further outside the end side (clamped to safe)
                         if xe >= (x0 + x1) / 2.0:
                             x_a = self._clamp(xe + 5.0, x_min, x_max)
                             x_b = self._clamp(xe + 10.0, x_min, x_max)
@@ -617,8 +652,7 @@ class MachineController(QObject):
                     send("M400")
 
                 else:
-                    # Vertical
-                    x = x0 + i * float(pp.fiber_spacing)
+                    x = x0 + i * S
                     if x > x1 + 1e-6:
                         break
 
@@ -654,252 +688,14 @@ class MachineController(QObject):
 
                     send("M400")
 
+                i += 1
+
         # footer
         send("M300 S440 P200")
         send("G0 X10 Y190 Z30 F3000")
 
     # ---------- Legacy (ported from GUI.py logic, with live params) ----------
-    def _limits_from_cups(self, cups: int) -> Tuple[float, float]:
-        if cups == 9:
-            return 117.0, 172.0
-        if cups == 6:
-            return 91.0, 145.0
-        return 63.0, 117.0
-
-    def _run_legacy(self, status_signal: Signal) -> None:
-        send = self._send_checked
-
-        # header
-        send("M220 S100")
-        send("M302 S0")
-        send("M221 S100")
-        send("G90")
-        send("M82")
-        send("G1 Z2 F1500")
-        send("G92 E0")
-
-        adjust_different_layers = 3.0
-
-        def extrusion() -> None:
-            pp = self.state.params
-            send("G91")
-            send(f"G1 E-{float(pp.droplet_amount)} F200")
-            send("G4 P1000")
-            send("G90")
-            self.state.set_param(
-                "syringe_current_amount",
-                self.state.params.syringe_current_amount - float(pp.droplet_amount),
-            )
-
-        def afterdrop() -> None:
-            pp = self.state.params
-            send("G91")
-            send(f"G1 E-{float(pp.droplet_amount)} F200")
-            send("G4 P500")
-            send("G90")
-            send(f"G1 F{int(pp.speed)}")
-            self.state.set_param(
-                "syringe_current_amount",
-                self.state.params.syringe_current_amount - float(pp.droplet_amount),
-            )
-
-        for layer in range(int(self.state.params.layers)):
-            p0 = self.state.params  # snapshot-ish for geometry
-            orientation = str(p0.orientation)
-            limit_x, limit_y = self._limits_from_cups(int(p0.cups))
-
-            denom = (float(p0.step) / 2.0) if float(p0.step) != 0 else 1e-6
-            lines_count = int(round(82.5 / denom))
-
-            # base offsets per layer
-            x1 = 25.5 - layer * adjust_different_layers
-            x2 = 128.0
-            x22 = 25.5
-            x3 = 128.0 + layer * adjust_different_layers
-
-            y1 = 79.0 - layer * adjust_different_layers
-            y2 = 181.5
-            y22 = 79.0 - layer * adjust_different_layers
-            y3 = 181.5 + layer * adjust_different_layers
-
-            send("G90")
-            send(f"G1 Z7 F{int(self.state.params.speed)}")
-
-            if orientation == "Horizontal":
-                y = 90.0
-                for _ in range(lines_count):
-                    if y >= limit_y:
-                        break
-
-                    pp = self.state.params
-                    speed = int(pp.speed)
-                    zoff = float(pp.z_offset)
-                    zhop = float(pp.z_hop)
-                    pause_ms = int(pp.pause_ms)
-
-                    send("G90")
-                    send(f"G1 X{x1:.3f} Y{y:.3f} F{speed}")
-                    send(f"G1 Z{zoff:.3f} F{speed}")
-                    extrusion()
-                    send(f"G1 Z{zhop:.3f} F{speed}")
-                    if pause_ms:
-                        send(f"G4 P{pause_ms}")
-
-                    send(f"G1 X{x2:.3f}")
-                    send(f"G1 X{x3:.3f} Z{zoff:.3f} F{speed}")
-
-                    if bool(pp.afterdrop):
-                        afterdrop()
-                    if bool(pp.clean):
-                        send(f"G1 X{(x3 + 5.0):.3f} Z0 F{speed}")
-                        send(f"G1 X{(x3 + 10.0):.3f} F{speed}")
-                        send(f"G1 Z3 F{speed}")
-
-                    y = round(y + float(pp.step), 2)
-
-                    send(f"G1 X{x3:.3f} Y{y:.3f} Z{zoff:.3f}")
-                    extrusion()
-                    send(f"G1 Z{zhop:.3f} F{speed}")
-                    if pause_ms:
-                        send(f"G4 P{pause_ms}")
-
-                    send(f"G1 X{x22:.3f} F{speed}")
-                    send(f"G1 Z{zoff:.3f} X{x1:.3f} F{speed}")
-
-                    pp2 = self.state.params
-                    if bool(pp2.afterdrop):
-                        afterdrop()
-                    if bool(pp2.clean):
-                        send(f"G1 X{(x1 - 5.0):.3f} Z0 F{speed}")
-                        send(f"G1 X{(x1 - 10.0):.3f} F{speed}")
-                        send(f"G1 Z3 F{speed}")
-
-                    y = round(y + float(self.state.params.step), 2)
-                    send("M400")
-
-            elif orientation == "Vertical":
-                x = 36.0
-                for _ in range(lines_count):
-                    if x >= limit_x:
-                        break
-
-                    pp = self.state.params
-                    speed = int(pp.speed)
-                    zoff = float(pp.z_offset)
-                    zhop = float(pp.z_hop)
-                    pause_ms = int(pp.pause_ms)
-
-                    send("G90")
-                    send(f"G1 X{x:.3f} Y{y1:.3f} F{speed}")
-                    send(f"G1 Z{zoff:.3f} F{speed}")
-                    extrusion()
-                    send(f"G1 Z{zhop:.3f} F{speed}")
-                    if pause_ms:
-                        send(f"G4 P{pause_ms}")
-
-                    send(f"G1 Y{y2:.3f}")
-                    send(f"G1 Z{zoff:.3f} Y{y3:.3f} F{speed}")
-
-                    if bool(pp.afterdrop):
-                        afterdrop()
-                    if bool(pp.clean):
-                        send(f"G1 Y{(y3 + 5.0):.3f} Z0 F{speed}")
-                        send(f"G1 Y{(y3 + 10.0):.3f} F{speed}")
-                        send(f"G1 Z3 F{speed}")
-
-                    x = round(x + float(pp.step), 2)
-
-                    send(f"G1 X{x:.3f} Y{y3:.3f} Z{zoff:.3f}")
-                    extrusion()
-                    send(f"G1 Z{zhop:.3f} F{speed}")
-                    if pause_ms:
-                        send(f"G4 P{pause_ms}")
-
-                    send(f"G1 Y{y22:.3f} F{speed}")
-                    send(f"G1 Z{zoff:.3f} Y{y1:.3f} F{speed}")
-
-                    pp2 = self.state.params
-                    if bool(pp2.afterdrop):
-                        afterdrop()
-                    if bool(pp2.clean):
-                        send(f"G1 Y{(y1 - 5.0):.3f} Z0 F{speed}")
-                        send(f"G1 Y{(y1 - 10.0):.3f} F{speed}")
-                        send(f"G1 Z3 F{speed}")
-
-                    x = round(x + float(self.state.params.step), 2)
-                    send("M400")
-
-            else:
-                # Both (simple): do one horizontal pass then one vertical pass in the same layer.
-                # (continua compatível e responde a mudanças live)
-                # Horizontal quick pass
-                y = 89.0
-                for _ in range(lines_count):
-                    if y >= limit_y:
-                        break
-
-                    pp = self.state.params
-                    speed = int(pp.speed)
-                    zoff = float(pp.z_offset)
-                    zhop = float(pp.z_hop)
-                    pause_ms = int(pp.pause_ms)
-
-                    send("G90")
-                    send(f"G1 X{x1:.3f} Y{y:.3f} F{speed}")
-                    send(f"G1 Z{zoff:.3f} F{speed}")
-                    extrusion()
-                    send(f"G1 Z{zhop:.3f} F{speed}")
-                    if pause_ms:
-                        send(f"G4 P{pause_ms}")
-
-                    send(f"G1 X{x3:.3f} Y{y:.3f} F{speed}")
-                    send(f"G1 Z{zoff:.3f} F{speed}")
-                    if bool(pp.afterdrop):
-                        afterdrop()
-                    if bool(pp.clean):
-                        send(f"G1 X{(x3 + 5.0):.3f} Z0 F{speed}")
-                        send(f"G1 X{(x3 + 10.0):.3f} F{speed}")
-                        send(f"G1 Z3 F{speed}")
-
-                    y = round(y + float(pp.step), 2)
-                    send("M400")
-
-                # Vertical quick pass
-                x = 35.5
-                for _ in range(lines_count):
-                    if x >= limit_x:
-                        break
-
-                    pp = self.state.params
-                    speed = int(pp.speed)
-                    zoff = float(pp.z_offset)
-                    zhop = float(pp.z_hop)
-                    pause_ms = int(pp.pause_ms)
-
-                    send("G90")
-                    send(f"G1 X{x:.3f} Y{y1:.3f} F{speed}")
-                    send(f"G1 Z{zoff:.3f} F{speed}")
-                    extrusion()
-                    send(f"G1 Z{zhop:.3f} F{speed}")
-                    if pause_ms:
-                        send(f"G4 P{pause_ms}")
-
-                    send(f"G1 X{x:.3f} Y{y3:.3f} F{speed}")
-                    send(f"G1 Z{zoff:.3f} F{speed}")
-                    if bool(pp.afterdrop):
-                        afterdrop()
-                    if bool(pp.clean):
-                        send(f"G1 Y{(y3 + 5.0):.3f} Z0 F{speed}")
-                        send(f"G1 Y{(y3 + 10.0):.3f} F{speed}")
-                        send(f"G1 Z3 F{speed}")
-
-                    x = round(x + float(pp.step), 2)
-                    send("M400")
-
-        # footer
-        send("M300 S440 P200")
-        send("G0 X10 Y190 Z30 F3000")
-
+    
     # ---------- Syringe (ported) ----------
     _ML_TO_EPOS = {1: 20, 2: 53, 3: 86, 4: 119, 5: 152}
 
