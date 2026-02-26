@@ -84,7 +84,7 @@ class RectanglePreview(QWidget):
         painter.setPen(QPen(QColor(120, 180, 255), 2))
         painter.setBrush(QBrush(Qt.NoBrush))
         rx = mx(sx0)
-        ry = my(sy1)
+        ry = my(sy1) + 20
         rw = mx(sx1) - mx(sx0)
         rh = my(sy0) - my(sy1)
         painter.drawRect(rx, ry, rw, rh)
@@ -127,7 +127,7 @@ class MainWindow(QMainWindow):
         self.state = state
         self.controller = controller
 
-        self.setWindowTitle("Nanofiber Machine")
+        self.setWindowTitle("Microfiber Machine Interface")
         self.setMinimumSize(QSize(980, 780))
 
         root = QWidget()
@@ -150,14 +150,14 @@ class MainWindow(QMainWindow):
         self.page_syringe = SyringePage(self)
         self.page_summary = SummaryPage(self)
         self.page_connection = ConnectionPage(self)
-        self.page_log = LogPage(self)
+        #self.page_log = LogPage(self)
 
         self._add_page("Welcome", self.page_welcome)
         self._add_page("Draw", self.page_draw)
         self._add_page("Syringe", self.page_syringe)
         self._add_page("Summary", self.page_summary)
         self._add_page("Connection", self.page_connection)
-        self._add_page("Log", self.page_log)
+        #self._add_page("Log", self.page_log)
 
         self.sidebar.currentRowChanged.connect(self.stack.setCurrentIndex)
 
@@ -165,7 +165,7 @@ class MainWindow(QMainWindow):
         self.sidebar.setCurrentRow(0)
 
         self.controller.connection_changed.connect(self.page_connection.on_connection_changed)
-        self.state.log.connect(self.page_log.append_log)
+        self.state.log.connect(self.page_connection.append_log)
 
     def _add_page(self, title: str, widget: QWidget) -> None:
         self.stack.addWidget(widget)
@@ -233,7 +233,7 @@ class WelcomePage(QWidget):
         layout.setAlignment(Qt.AlignCenter)
         layout.setSpacing(16)
 
-        title = QLabel("NanoFiber Fabrication Interface\nfor Ender printer")
+        title = QLabel("MicroFiber Machine Interface")
         f = QFont()
         f.setPointSize(26)
         f.setBold(True)
@@ -278,7 +278,7 @@ class DrawPage(QWidget):
         self.state.set_param("mode", "CustomCentered")
 
         # ---------------- Rectangle parameters ----------------
-        rect = QGroupBox("Rectangle parameters")
+        rect = QGroupBox("Layout parameters")
         rect_grid = QGridLayout(rect)
         rect_grid.setHorizontalSpacing(14)
         rect_grid.setVerticalSpacing(10)
@@ -332,12 +332,12 @@ class DrawPage(QWidget):
 
         outer.addWidget(rect)
 
-        outer.addWidget(_subtle_label("Preview (230×230 bed, usable area, rectangle)"))
+        outer.addWidget(_subtle_label("Usable drawing area preview"))
         self.preview = RectanglePreview(self.controller, self.state)
         outer.addWidget(self.preview)
 
         # ---------------- Common motion/deposition (kept) ----------------
-        common = QGroupBox("Common parameters")
+        common = QGroupBox("Drawing parameters")
         common_grid = QGridLayout(common)
         common_grid.setHorizontalSpacing(14)
         common_grid.setVerticalSpacing(10)
@@ -693,15 +693,21 @@ class ConnectionPage(QWidget):
         conn_row.addWidget(self.btn_connect)
         conn_row.addWidget(self.btn_disconnect)
         conn_row.addWidget(self.lbl_state, 1)
+        
+     
+        
         outer.addLayout(conn_row)
+        
+        self.text = QTextEdit()
+        self.text.setReadOnly(True)
+        self.text.setPlaceholderText("Connection log")
+        outer.addWidget(self.text, 1)
 
         action_row = QHBoxLayout()
-        self.btn_move = QPushButton("Movement test")
         self.btn_start = QPushButton("Do Science!")
         self.btn_pause = QPushButton("Pause")
         self.btn_pause.setEnabled(False)
 
-        action_row.addWidget(self.btn_move)
         action_row.addWidget(self.btn_start)
         action_row.addWidget(self.btn_pause)
         outer.addStretch(1)
@@ -716,7 +722,6 @@ class ConnectionPage(QWidget):
 
         self.btn_connect.clicked.connect(self._connect)
         self.btn_disconnect.clicked.connect(self._disconnect)
-        self.btn_move.clicked.connect(self.controller.movement_test)
         self.btn_start.clicked.connect(self._start)
         self.btn_pause.clicked.connect(self.controller.toggle_pause)
 
@@ -762,9 +767,13 @@ class ConnectionPage(QWidget):
     @Slot(bool)
     def _on_drawing_paused(self, paused: bool) -> None:
         self.btn_pause.setText("Resume" if paused else "Pause")
+    
+    @Slot(str)
+    def append_log(self, msg: str) -> None:
+        self.text.append(msg)
 
 
-class LogPage(QWidget):
+'''class LogPage(QWidget):
     def __init__(self, mw: MainWindow) -> None:
         super().__init__()
         outer = QVBoxLayout(self)
@@ -781,3 +790,4 @@ class LogPage(QWidget):
     @Slot(str)
     def append_log(self, msg: str) -> None:
         self.text.append(msg)
+'''

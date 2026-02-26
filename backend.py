@@ -767,4 +767,5 @@ class MachineController(QObject):
 
     def test_zoffset(self) -> None:
         self.log("Test Z-Offset")
-        
+        send = self._send_checked
+        send(f"G1 Z{self.state.params.z_offset:.3f} F1000")
