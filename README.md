@@ -1,4 +1,4 @@
-# Microfiber Drawing Controller
+# Microfiber Drawing Interface
 
 This repository contains a PySide6-based graphical user interface (GUI) designed to control a custom microfiber drawing tool. The hardware is built on top of a modified 3D printer chassis equipped with a custom syringe extruder. 
 
@@ -68,6 +68,7 @@ These control the physical motion and extrusion behavior of the machine.
 ### Syringe Parameters
 * **Syringe Current Amount:** Tracks the theoretical position/volume of the syringe based on commanded moves.
 * **Syringe Droplet Units:** The specific amount of material to draw into the syringe when using the intake function.
+
 
 
 This tool was developed by Gabriel Alvares de Sousa Guimaraes under the supervision of Andrii Shykarenko at the Technical University of Liberec.
