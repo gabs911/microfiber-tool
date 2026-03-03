@@ -26,16 +26,11 @@ class Params:
     # --- Mode ---
     # Legacy: usa a lógica antiga (cups + orientation Horizontal/Vertical/Both)
     # CustomCentered: usa L/W/spacing centralizado na área segura (safe bounds)
-    mode: str = "CustomCentered"  # "Legacy" | "CustomCentered"
 
     # --- Legacy draw params (GUI.py semantics) ---
-    layers: int = 1
-    orientation: str = "Horizontal"  # Horizontal | Vertical | Both
-    cups: int = 9                    # 3 | 6 | 9
 
     # --- Motion / deposition ---
     speed: int = 1500                # mm/min
-    step: float = 0.1                # mm (Legacy uses step in scan)
     droplet_amount: float = 1.0      # E units
     z_hop: float = 10.0              # mm
     pause_ms: int = 0                # ms (G4 P...)
@@ -53,7 +48,6 @@ class Params:
     safe_x_max: float = 170
     safe_y_min: float = 20.0
     safe_y_max: float = 250.0
-
 
     # --- Rectangle anchor (bottom-left corner of draw rectangle) ---
     start_x: float = 0
@@ -82,16 +76,7 @@ class AppState(QObject):
     def to_project_dict(self) -> Dict[str, Any]:
         p = self.params
         return {
-            "Mode": str(p.mode),
-
-            # legacy
-            "Layers": int(p.layers),
-            "Orientation": str(p.orientation),
-            "Cups": int(p.cups),
-
-            # motion/deposition
             "Speed": int(p.speed),
-            "Step": float(p.step),
             "Droplet Amount": float(p.droplet_amount),
             "Z-Hop": float(p.z_hop),
             "Pause (ms)": int(p.pause_ms),
@@ -99,11 +84,9 @@ class AppState(QObject):
             "Afterdrop": bool(p.afterdrop),
             "Clean": bool(p.clean),
 
-            # syringe
             "Syringe Current Amount": float(p.syringe_current_amount),
             "Syringe Droplet Units": int(p.syringe_droplet_units),
 
-            # safe area
             "Safe X Min": float(p.safe_x_min),
             "Safe X Max": float(p.safe_x_max),
             "Safe Y Min": float(p.safe_y_min),
@@ -112,7 +95,6 @@ class AppState(QObject):
             "Start X": float(p.start_x),
             "Start Y": float(p.start_y),
 
-            # custom centered
             "Fiber Orientation": str(p.fiber_orientation),
             "Fiber Length": float(p.fiber_length),
             "Fiber Width": float(p.fiber_width),
@@ -122,14 +104,7 @@ class AppState(QObject):
     def apply_project_dict(self, data: Dict[str, Any]) -> None:
         p = self.params
 
-        p.mode = str(data.get("Mode", p.mode))
-
-        p.layers = int(data.get("Layers", p.layers))
-        p.orientation = str(data.get("Orientation", p.orientation))
-        p.cups = int(data.get("Cups", p.cups))
-
         p.speed = int(data.get("Speed", p.speed))
-        p.step = float(data.get("Step", p.step))
         p.droplet_amount = float(data.get("Droplet Amount", p.droplet_amount))
         p.z_hop = float(data.get("Z-Hop", p.z_hop))
         p.pause_ms = int(data.get("Pause (ms)", p.pause_ms))
@@ -154,7 +129,6 @@ class AppState(QObject):
         p.fiber_spacing = float(data.get("Fiber Spacing", p.fiber_spacing))
 
         self.changed.emit()
-
 
 # ----------------------------- Drawing Worker -----------------------------
 
@@ -219,14 +193,8 @@ class MachineController(QObject):
         x_min, x_max, y_min, y_max, xc, yc = self._safe_center()
 
         summary_dict = {
-            "Mode": p.mode,
-
-            "Layers": f"{p.layers}",
-            "Legacy Orientation": p.orientation,
-            "Cups": f"{p.cups}",
-
+            "Orientation": p.fiber_orientation,
             "Speed": f"{p.speed} mm/min",
-            "Step (legacy)": f"{p.step} mm",
             "Z-Offset": f"{p.z_offset} mm",
             "Z-Hop": f"{p.z_hop} mm",
             "Pause": f"{p.pause_ms} ms",
@@ -238,10 +206,9 @@ class MachineController(QObject):
             "Safe Area Y": f"[{y_min}, {y_max}]",
             "Safe Center": f"({xc:.2f}, {yc:.2f})",
 
-            "Custom Orientation": p.fiber_orientation,
-            "Custom Fiber Length": f"{p.fiber_length} mm",
-            "Custom Fiber Width": f"{p.fiber_width} mm",
-            "Custom Fiber Spacing": f"{p.fiber_spacing} mm",
+            "Fiber Length": f"{p.fiber_length} mm",
+            "Fiber Width": f"{p.fiber_width} mm",
+            "Fiber Spacing": f"{p.fiber_spacing} mm",
 
             "Syringe Current Amount": f"{p.syringe_current_amount}",
             "Syringe Droplet Units": f"{p.syringe_droplet_units}",
@@ -509,17 +476,9 @@ class MachineController(QObject):
 
     # ---------- Drawing loop ----------
     def _run_drawing_loop(self, status_signal: Signal) -> None:
-        """
-        Select mode and run. Mode is read once at start (safer).
-        """
         if self.ser is None:
             raise RuntimeError("No connection to the printer")
-
-        mode = str(self.state.params.mode)
-        if mode == "CustomCentered":
-            self._run_custom_centered(status_signal)
-        else:
-            self._run_legacy(status_signal)
+        self._run_custom_centered(status_signal)
 
     def _wait_pause_or_stop(self) -> None:
         # allows responsive stop while paused
@@ -579,120 +538,119 @@ class MachineController(QObject):
 
 
         # run layers (anchored rectangle pattern; SAFE HARD)
-        for layer in range(int(self.state.params.layers)):
 
-            # we validate on every fiber because parameters can change live
-            send("G90")
-            send(f"G1 Z7 F{int(self.state.params.speed)}")
+        # we validate on every fiber because parameters can change live
+        send("G90")
+        send(f"G1 Z7 F{int(self.state.params.speed)}")
 
-            i = 0
-            while True:
-                # allow live updates to apply to the NEXT fiber safely
-                pp = self.state.params
+        i = 0
+        while True:
+            # allow live updates to apply to the NEXT fiber safely
+            pp = self.state.params
 
-                orient = str(pp.fiber_orientation)
-                L = float(pp.fiber_length)
-                W = float(pp.fiber_width)
-                S = float(pp.fiber_spacing)
+            orient = str(pp.fiber_orientation)
+            L = float(pp.fiber_length)
+            W = float(pp.fiber_width)
+            S = float(pp.fiber_spacing)
 
-                if L <= 0 or W < 0:
-                    raise RuntimeError("Fiber length must be > 0 and width must be >= 0")
-                if S <= 0:
-                    raise RuntimeError("Fiber spacing must be > 0")
+            if L <= 0 or W < 0:
+                raise RuntimeError("Fiber length must be > 0 and width must be >= 0")
+            if S <= 0:
+                raise RuntimeError("Fiber spacing must be > 0")
 
-                # SAFE HARD rectangle (raises if out of bounds)
-                x0, x1, y0, y1 = self._compute_anchored_rect(
-                    L, W, orient, float(pp.start_x), float(pp.start_y)
-                )
+            # SAFE HARD rectangle (raises if out of bounds)
+            x0, x1, y0, y1 = self._compute_anchored_rect(
+                L, W, orient, float(pp.start_x), float(pp.start_y)
+            )
 
-                speed = int(pp.speed)
-                zoff = float(pp.z_offset)
-                zhop = float(pp.z_hop)
-                pause_ms = int(pp.pause_ms)
-                after = bool(pp.afterdrop)
-                clean = bool(pp.clean)
+            speed = int(pp.speed)
+            zoff = float(pp.z_offset)
+            zhop = float(pp.z_hop)
+            pause_ms = int(pp.pause_ms)
+            after = bool(pp.afterdrop)
+            clean = bool(pp.clean)
 
-                if orient == "Horizontal":
-                    y = y0 + i * S
-                    if y > y1 + 1e-6:
-                        break
+            if orient == "Horizontal":
+                y = y0 + i * S
+                if y > y1 + 1e-6:
+                    break
 
-                    # alternate direction
-                    if (i % 2) == 0:
-                        xs, xe = x0, x1
-                    else:
-                        xs, xe = x1, x0
-
-                    send(f"G1 X{xs:.3f} Y{y:.3f} F{speed}")
-                    send(f"G1 Z{zoff:.3f} F{speed}")
-                    extrusion()
-                    send(f"G1 Z{zhop:.3f} F{speed}")
-                    if pause_ms:
-                        send(f"G4 P{pause_ms}")
-
-                    send(f"G1 X{xe:.3f} Y{y:.3f} F{speed}")
-                    send(f"G1 Z{zoff:.3f} F{speed}")
-
-                    if after:
-                        afterdrop()
-
-                    if clean:
-                        x_min, x_max, y_min, y_max, _, _ = self._safe_center()
-                        # move a bit further outside the end side (clamped to safe)
-                        if xe >= (x0 + x1) / 2.0:
-                            x_a = self._clamp(xe + 5.0, x_min, x_max)
-                            x_b = self._clamp(xe + 10.0, x_min, x_max)
-                        else:
-                            x_a = self._clamp(xe - 5.0, x_min, x_max)
-                            x_b = self._clamp(xe - 10.0, x_min, x_max)
-                        send(f"G1 X{x_a:.3f} Z0 F{speed}")
-                        send(f"G1 X{x_b:.3f} F{speed}")
-                        send(f"G1 Z3 F{speed}")
-
-                    send("M400")
-
+                # alternate direction
+                if (i % 2) == 0:
+                    xs, xe = x0, x1
                 else:
-                    x = x0 + i * S
-                    if x > x1 + 1e-6:
-                        break
+                    xs, xe = x1, x0
 
-                    if (i % 2) == 0:
-                        ys, ye = y0, y1
+                send(f"G1 X{xs:.3f} Y{y:.3f} F{speed}")
+                send(f"G1 Z{zoff:.3f} F{speed}")
+                extrusion()
+                send(f"G1 Z{zhop:.3f} F{speed}")
+                if pause_ms:
+                    send(f"G4 P{pause_ms}")
+
+                send(f"G1 X{xe:.3f} Y{y:.3f} F{speed}")
+                send(f"G1 Z{zoff:.3f} F{speed}")
+
+                if after:
+                    afterdrop()
+
+                if clean:
+                    x_min, x_max, y_min, y_max, _, _ = self._safe_center()
+                    # move a bit further outside the end side (clamped to safe)
+                    if xe >= (x0 + x1) / 2.0:
+                        x_a = self._clamp(xe + 5.0, x_min, x_max)
+                        x_b = self._clamp(xe + 10.0, x_min, x_max)
                     else:
-                        ys, ye = y1, y0
+                        x_a = self._clamp(xe - 5.0, x_min, x_max)
+                        x_b = self._clamp(xe - 10.0, x_min, x_max)
+                    send(f"G1 X{x_a:.3f} Z0 F{speed}")
+                    send(f"G1 X{x_b:.3f} F{speed}")
+                    send(f"G1 Z3 F{speed}")
 
-                    send(f"G1 X{x:.3f} Y{ys:.3f} F{speed}")
-                    send(f"G1 Z{zoff:.3f} F{speed}")
-                    extrusion()
-                    send(f"G1 Z{zhop:.3f} F{speed}")
-                    if pause_ms:
-                        send(f"G4 P{pause_ms}")
+                send("M400")
 
-                    send(f"G1 X{x:.3f} Y{ye:.3f} F{speed}")
-                    send(f"G1 Z{zoff:.3f} F{speed}")
+            else:
+                x = x0 + i * S
+                if x > x1 + 1e-6:
+                    break
 
-                    if after:
-                        afterdrop()
+                if (i % 2) == 0:
+                    ys, ye = y0, y1
+                else:
+                    ys, ye = y1, y0
 
-                    if clean:
-                        x_min, x_max, y_min, y_max, _, _ = self._safe_center()
-                        if ye >= (y0 + y1) / 2.0:
-                            y_a = self._clamp(ye + 5.0, y_min, y_max)
-                            y_b = self._clamp(ye + 10.0, y_min, y_max)
-                        else:
-                            y_a = self._clamp(ye - 5.0, y_min, y_max)
-                            y_b = self._clamp(ye - 10.0, y_min, y_max)
-                        send(f"G1 Y{y_a:.3f} Z0 F{speed}")
-                        send(f"G1 Y{y_b:.3f} F{speed}")
-                        send(f"G1 Z3 F{speed}")
+                send(f"G1 X{x:.3f} Y{ys:.3f} F{speed}")
+                send(f"G1 Z{zoff:.3f} F{speed}")
+                extrusion()
+                send(f"G1 Z{zhop:.3f} F{speed}")
+                if pause_ms:
+                    send(f"G4 P{pause_ms}")
 
-                    send("M400")
+                send(f"G1 X{x:.3f} Y{ye:.3f} F{speed}")
+                send(f"G1 Z{zoff:.3f} F{speed}")
 
-                i += 1
+                if after:
+                    afterdrop()
 
-        # footer
-        send("M300 S440 P200")
-        send("G0 X10 Y190 Z30 F3000")
+                if clean:
+                    x_min, x_max, y_min, y_max, _, _ = self._safe_center()
+                    if ye >= (y0 + y1) / 2.0:
+                        y_a = self._clamp(ye + 5.0, y_min, y_max)
+                        y_b = self._clamp(ye + 10.0, y_min, y_max)
+                    else:
+                        y_a = self._clamp(ye - 5.0, y_min, y_max)
+                        y_b = self._clamp(ye - 10.0, y_min, y_max)
+                    send(f"G1 Y{y_a:.3f} Z0 F{speed}")
+                    send(f"G1 Y{y_b:.3f} F{speed}")
+                    send(f"G1 Z3 F{speed}")
+
+                send("M400")
+
+            i += 1
+
+            # footer
+            send("M300 S440 P200")
+            send("G0 X10 Y190 Z30 F3000")
 
     # ---------- Legacy (ported from GUI.py logic, with live params) ----------
     

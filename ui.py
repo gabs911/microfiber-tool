@@ -88,6 +88,7 @@ class RectanglePreview(QWidget):
         rw = mx(sx1) - mx(sx0)
         rh = my(sy0) - my(sy1)
         painter.drawRect(rx, ry, rw, rh)
+        painter.drawRect(rx + 65, ry + 65, 80 , 80)  
 
         # Requested rectangle
         orient = str(p.fiber_orientation)
@@ -275,7 +276,6 @@ class DrawPage(QWidget):
         outer.addWidget(_title_label("Drawing"))
 
         # Force rectangle mode (legacy UI removed)
-        self.state.set_param("mode", "CustomCentered")
 
         # ---------------- Rectangle parameters ----------------
         rect = QGroupBox("Layout parameters")
@@ -566,22 +566,14 @@ class SummaryPage(QWidget):
         info_grid = QGridLayout()
 
         keys = [
-            "Mode",
-            "Layers",
-            "Legacy Orientation",
-            "Cups",
+            "Orientation",
             "Speed",
-            "Step (legacy)",
             "Z-Offset",
             "Z-Hop",
             "Pause (ms)",
             "Droplet Amount",
             "Afterdrop",
             "Clean",
-            "Safe Area X",
-            "Safe Area Y",
-            "Safe Center",
-            "Custom Orientation",
             "Fiber Length",
             "Fiber Width",
             "Fiber Spacing",
@@ -635,13 +627,10 @@ class SummaryPage(QWidget):
         xc = (x_min + x_max) / 2.0
         yc = (y_min + y_max) / 2.0
 
-        self.labels["Mode"].setText(p.mode)
-        self.labels["Layers"].setText(str(p.layers))
-        self.labels["Legacy Orientation"].setText(p.orientation)
-        self.labels["Cups"].setText(str(p.cups))
+
+        self.labels["Orientation"].setText(p.fiber_orientation)
 
         self.labels["Speed"].setText(f"{p.speed} mm/min")
-        self.labels["Step (legacy)"].setText(f"{p.step} mm")
         self.labels["Z-Offset"].setText(f"{p.z_offset} mm")
         self.labels["Z-Hop"].setText(f"{p.z_hop} mm")
         self.labels["Pause (ms)"].setText(str(p.pause_ms))
@@ -649,11 +638,7 @@ class SummaryPage(QWidget):
         self.labels["Afterdrop"].setText("on" if p.afterdrop else "off")
         self.labels["Clean"].setText("on" if p.clean else "off")
 
-        self.labels["Safe Area X"].setText(f"[{x_min}, {x_max}]")
-        self.labels["Safe Area Y"].setText(f"[{y_min}, {y_max}]")
-        self.labels["Safe Center"].setText(f"({xc:.2f}, {yc:.2f})")
 
-        self.labels["Custom Orientation"].setText(p.fiber_orientation)
         self.labels["Fiber Length"].setText(f"{p.fiber_length} mm")
         self.labels["Fiber Width"].setText(f"{p.fiber_width} mm")
         self.labels["Fiber Spacing"].setText(f"{p.fiber_spacing} mm")
